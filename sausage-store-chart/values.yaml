@@ -66,13 +66,14 @@ backend:
       maxSurge: 1
       maxUnavailable: 0
   image: YOUR_DOCKERHUB/sausage-backend:latest
+  # limits.cpu считается с учётом surge-пода при RollingUpdate: квота namespace 3 CPU
   resources:
     requests:
       memory: "256Mi"
       cpu: "300m"
     limits:
       memory: "512Mi"
-      cpu: "1"
+      cpu: "700m"
   containerPort: 8080
   podSecurityContext:
     runAsNonRoot: true
@@ -165,7 +166,7 @@ infra:
         cpu: "100m"
       limits:
         memory: "256Mi"
-        cpu: "500m"
+        cpu: "400m"
   mongodb:
     image: mongo:7.0
     containerPort: 27017

@@ -185,11 +185,16 @@ jobs:
                }' > "${RUNNER_TEMP}/db-secrets.json"
             chmod 600 "${RUNNER_TEMP}/db-secrets.json"
             echo "Secrets resolved from Vault (${VAULT_KV_PATH})"
-        - name: Remove failed initial release
+        - name: Recover release state
           run: |
             if helm status "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" >/dev/null 2>&1; then
-              if ! helm history "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" -o json \
-                   | jq -e 'map(select(.status == "deployed")) | length > 0' >/dev/null; then
+              history="$(helm history "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" -o json)"
+              last_status="$(printf '%s' "${history}" | jq -r 'last.status')"
+              deployed_rev="$(printf '%s' "${history}" | jq -r 'map(select(.status == "deployed")) | last.revision // empty')"
+              if [[ "${last_status}" == pending-* && -n "${deployed_rev}" ]]; then
+                echo "Release is stuck in ${last_status} - rolling back to revision ${deployed_rev}"
+                helm rollback "${HELM_RELEASE}" "${deployed_rev}" --namespace "${SAUSAGE_STORE_NAMESPACE}" --wait --timeout 5m
+              elif [[ -z "${deployed_rev}" ]]; then
                 echo "Release ${HELM_RELEASE} has no deployed revisions - uninstalling it before a fresh install"
                 helm uninstall "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" --wait
               fi
