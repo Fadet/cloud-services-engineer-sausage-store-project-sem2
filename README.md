@@ -106,3 +106,10 @@ kubectl -n "$NS" describe hpa sausage-store-backend-report-hpa  # Min 1 / Max 5 
 kubectl -n "$NS" logs deploy/sausage-store-backend | grep -i flyway   # Successfully applied 4 migrations
 curl -s https://front-stepanovsn.2sem.students-projects.ru/api/products | head -c 300
 ```
+
+## Vault на Yandex Cloud (Terraform bootstrap)
+
+Каталог `terraform/` поднимает VM в Yandex Cloud с Vault в Docker и заполняет `kv/sausage-store`
+случайными паролями. Описание ресурсов, переменных, запуск и эксплуатация — в [terraform/README.md](terraform/README.md).
+После `terraform apply`: `VAULT_HOST` (GitHub variable) = `terraform output -raw vault_public_ip`,
+`VAULT_TOKEN` (GitHub secret) = `ssh ubuntu@<ip> 'sudo cat /opt/vault/sausage-store.token'`.

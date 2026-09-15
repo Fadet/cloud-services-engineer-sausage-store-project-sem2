@@ -1,0 +1,15 @@
+services:
+  vault:
+    image: ${vault_image}
+    container_name: vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+    volumes:
+      - /opt/vault/config:/vault/config:ro
+      - /opt/vault/data:/vault/file
+    command: vault server -config=/vault/config/vault.hcl

@@ -1,0 +1,87 @@
+#cloud-config
+hostname: sausage-store-vault
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - openssl
+
+users:
+  - name: ${vm_user}
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+groups:
+  - docker
+
+write_files:
+  - path: /etc/vault-bootstrap.env
+    permissions: "0600"
+    content: |
+      KV_MOUNT=${vault_kv_mount}
+      SECRET_PATH=${vault_secret_path}
+      TOKEN_TTL=${vault_token_ttl}
+      POSTGRES_USER=${postgres_user}
+      MONGO_ROOT_USER=${mongo_root_user}
+      MONGO_APP_USER=${mongo_app_user}
+      MONGO_APP_DATABASE=${mongo_app_database}
+
+  - path: /opt/vault/config/vault.hcl
+    permissions: "0644"
+    content: |
+      ${indent(6, vault_hcl)}
+
+  - path: /opt/vault/docker-compose.yml
+    permissions: "0644"
+    content: |
+      ${indent(6, docker_compose)}
+
+  - path: /opt/vault/bin/vault-bootstrap.sh
+    permissions: "0700"
+    content: |
+      ${indent(6, bootstrap_sh)}
+
+  - path: /opt/vault/bin/vault-unseal.sh
+    permissions: "0700"
+    content: |
+      ${indent(6, unseal_sh)}
+
+  - path: /etc/systemd/system/vault-unseal.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Unseal Vault after container start
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/vault/bin/vault-unseal.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - sh -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - systemctl enable --now docker
+  - mkdir -p /opt/vault/data
+  - chown -R 100:1000 /opt/vault/data
+  - chmod 700 /opt/vault/data
+  - docker compose -f /opt/vault/docker-compose.yml up -d
+  - /opt/vault/bin/vault-bootstrap.sh
+  - systemctl daemon-reload
+  - systemctl enable vault-unseal.service
+
+final_message: "sausage-store Vault VM is ready after $UPTIME seconds; see /var/log/vault-bootstrap.log"
