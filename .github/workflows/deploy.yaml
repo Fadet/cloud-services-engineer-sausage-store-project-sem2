@@ -118,8 +118,6 @@ jobs:
           with:
             version: v3.14.0
         - name: Configure kubeconfig
-          # kubeconfig приходит из секрета KUBE_CONFIG и в репозиторий не попадает.
-          # Секрет может быть как «сырым» YAML, так и base64 — поддерживаем оба варианта.
           run: |
             mkdir -p ~/.kube
             if printf '%s' "${KUBE_CONFIG}" | grep -q 'apiVersion'; then
@@ -136,10 +134,6 @@ jobs:
               --password "${NEXUS_HELM_REPO_PASSWORD}"
             helm repo update
         - name: Read database secrets from Vault
-          # Единый источник истины для паролей БД — Vault (kv/sausage-store).
-          # Бэкенд читает их в рантайме через Spring Cloud Vault, а CI — здесь, чтобы
-          # передать в чарт значения для инициализации PostgreSQL/MongoDB и backend-report.
-          # В git и в values.yaml паролей нет. Поддерживаются KV v2 и v1.
           env:
             VAULT_ADDR: "${{ vars.VAULT_SCHEME || 'http' }}://${{ vars.VAULT_HOST }}:${{ vars.VAULT_PORT || '8200' }}"
             VAULT_KV_PATH: "${{ vars.VAULT_KV_PATH || 'kv/sausage-store' }}"
@@ -200,9 +194,6 @@ jobs:
               fi
             fi
         - name: Deploy Helm chart from Nexus
-          # Namespace создан заранее в учебном кластере; прав на его создание у SA нет.
-          # Образы фиксируются тегом с sha коммита, адрес Vault берётся из переменной
-          # репозитория VAULT_HOST, токен — из секрета VAULT_TOKEN, пароли БД — из Vault (шаг выше).
           run: |
             helm upgrade --install "${HELM_RELEASE}" "nexus/${HELM_CHART}" \
               --version "${HELM_CHART_VERSION}" \
@@ -219,7 +210,14 @@ jobs:
               --wait --timeout 10m
             rm -f "${RUNNER_TEMP}/db-secrets.json"
         - name: Show release status
+          continue-on-error: true
           run: |
-            helm list --namespace "${SAUSAGE_STORE_NAMESPACE}"
-            helm status "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}"
-            kubectl -n "${SAUSAGE_STORE_NAMESPACE}" get pods,pvc,svc,ingress,hpa,vpa
+            for attempt in 1 2 3; do
+              if helm list --namespace "${SAUSAGE_STORE_NAMESPACE}" \
+                 && helm status "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" \
+                 && kubectl -n "${SAUSAGE_STORE_NAMESPACE}" get pods,pvc,svc,ingress,hpa,vpa; then
+                exit 0
+              fi
+              echo "attempt ${attempt} failed, retrying in 15s"; sleep 15
+            done
+            exit 1
