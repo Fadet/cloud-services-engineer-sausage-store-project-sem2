@@ -134,12 +134,7 @@ spec:
             - secretRef:
                 name: mongodb-secret
           resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
+{{ toYaml .Values.mongodb.initJob.resources | indent 12 }}
           command:
             - sh
             - -c
