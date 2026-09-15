@@ -65,10 +65,11 @@ spec:
         resources:
 {{ toYaml .Values.mongodb.resources | indent 10 }}
         readinessProbe:
-          exec:
-            command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-          initialDelaySeconds: 10
+          tcpSocket:
+            port: {{ .Values.mongodb.containerPort }}
+          initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 3
         volumeMounts:
         - name: mongodb-data
           mountPath: /data/db

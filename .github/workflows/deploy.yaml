@@ -182,6 +182,15 @@ jobs:
                }' > "${RUNNER_TEMP}/db-secrets.json"
             chmod 600 "${RUNNER_TEMP}/db-secrets.json"
             echo "Secrets resolved from Vault (${VAULT_KV_PATH})"
+        - name: Remove failed initial release
+          run: |
+            if helm status "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" >/dev/null 2>&1; then
+              if ! helm history "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" -o json \
+                   | jq -e 'map(select(.status == "deployed")) | length > 0' >/dev/null; then
+                echo "Release ${HELM_RELEASE} has no deployed revisions - uninstalling it before a fresh install"
+                helm uninstall "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}" --wait
+              fi
+            fi
         - name: Deploy Helm chart from Nexus
           # Namespace создан заранее в учебном кластере; прав на его создание у SA нет.
           # Образы фиксируются тегом с sha коммита, адрес Vault берётся из переменной

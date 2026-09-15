@@ -86,7 +86,7 @@ backend:
       drop: ["ALL"]
   livenessProbe:
     httpGet:
-      path: /actuator/health
+      path: /actuator/health/liveness
       port: 8080
     initialDelaySeconds: 60
     periodSeconds: 15
@@ -94,7 +94,7 @@ backend:
     failureThreshold: 5
   readinessProbe:
     httpGet:
-      path: /actuator/health
+      path: /actuator/health/readiness
       port: 8080
     initialDelaySeconds: 30
     periodSeconds: 10
