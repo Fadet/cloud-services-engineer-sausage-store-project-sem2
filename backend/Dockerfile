@@ -1,31 +1,32 @@
-#Это так называемый мультистейдж docker-файл. Сначала делаем образ, который соберёт нам java-приложение,
-#а затем из него берём собранный артефакт и кладём его в новый образ, чтобы оставить в нём меньше лишнего
-
-# build
-FROM maven:3.8.2-openjdk-16-slim as builder
-# задаём переменную VERSION, которая будет использоваться для сборки проекта
+FROM maven:3.8.2-openjdk-16-slim AS builder
 ARG VERSION=${VERSION}
 WORKDIR /usr/src/app
 COPY ./src ./src
 COPY *.xml ./
 
-RUN mvn package -Dversion.application=${VERSION}
+RUN mvn -B package -Dversion.application=${VERSION}
 
-# release
-FROM openjdk:16-jdk-alpine
+FROM eclipse-temurin:16-jdk-alpine
 ARG VERSION=${VERSION}
 WORKDIR /app
-# создаём пользователя jaruser
-RUN addgroup --system jaruser \
-    && adduser -S -s /bin/false -G jaruser jaruser -D -H \
-    && apk add --no-cache dumb-init==1.2.5-r0 \
-    && apk add --update curl \
-    && rm -rf /var/cache/apk/* \
+
+RUN apk upgrade --no-cache \
+    && apk add --no-cache dumb-init \
+    && addgroup -S -g 1001 jaruser \
+    && adduser -S -s /sbin/nologin -G jaruser -u 1001 -D -H jaruser \
     && mkdir -p /logs/reports \
     && chown -R jaruser:jaruser /logs
 COPY --chown=jaruser:jaruser \
      --from=builder /usr/src/app/target/sausage-store-${VERSION}.jar ./sausage-store.jar
 EXPOSE 8080
-# приложение будет запускаться под пользователем jaruser
-USER jaruser
-ENTRYPOINT ["dumb-init", "java", "-jar", "-Dmyserver.bindPort=8080", "./sausage-store.jar"]
+
+USER 1001:1001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/actuator/health >/dev/null || exit 1
+
+ENTRYPOINT ["dumb-init", "java", \
+  "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", \
+  "-Djava.security.egd=file:/dev/./urandom", \
+  "-Dmyserver.bindPort=8080", \
+  "-jar", "/app/sausage-store.jar"]
