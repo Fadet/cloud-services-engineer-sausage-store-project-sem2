@@ -16,7 +16,7 @@ spec:
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   replicas: {{ .Values.replicas }}
   strategy:
-{{ toYaml .Values.strategy | indent 4 }} 
+{{ toYaml .Values.strategy | indent 4 }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-{{ .Chart.Name }}
@@ -28,27 +28,27 @@ spec:
         prometheus.io/scrape: "{{ .Values.annotations.scrape }}"
       labels:
         app: {{ .Release.Name }}-{{ .Chart.Name }}
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/instance: "{{ .Release.Name }}"
+        app.kubernetes.io/component: {{ .Chart.Name }}
+        app.kubernetes.io/part-of: {{ .Release.Name }}
     spec:
+      # Приложение работает от uid 1001 (jaruser в образе); root FS только на чтение,
+      # изменяемые каталоги (/logs для log4j2, /tmp для JVM) вынесены в emptyDir
+      securityContext:
+{{ toYaml .Values.podSecurityContext | indent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ .Values.image }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+{{ toYaml .Values.containerSecurityContext | indent 12 }}
           env:
             - name: SPRING_DATASOURCE_URL
               valueFrom:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
                   key: postgres_uri
-            - name: SPRING_DATASOURCE_USERNAME
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
-                  key: postgres_user
-            - name: SPRING_DATASOURCE_PASSWORD
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
-                  key: postgres_password
             - name: REPORT_PATH
               valueFrom:
                 configMapKeyRef:
@@ -59,39 +59,40 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
                   key: log_path
+            - name: VAULT_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
+                  key: vault_host
+            - name: VAULT_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
+                  key: vault_port
+            - name: VAULT_SCHEME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
+                  key: vault_scheme
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-{{ .Chart.Name }}-vault
+                  key: vault_token
           resources:
-{{ toYaml .Values.resources | indent 12 }} 
+{{ toYaml .Values.resources | indent 12 }}
           ports:
             - name: {{ .Chart.Name }}
               containerPort: {{ .Values.containerPort }}
           livenessProbe:
-{{ toYaml .Values.livenessProbe | indent 12 }} 
+{{ toYaml .Values.livenessProbe | indent 12 }}
+          volumeMounts:
+            - name: logs
+              mountPath: /logs
+            - name: tmp
+              mountPath: /tmp
       volumes:
-      - name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
-        configMap:
-          name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
-          items:
-            - key: postgres_uri
-              path: postgres_uri
-            - key: postgres_user
-              path: postgres_user
-            - key: postgres_password
-              path: postgres_password
-            - key: report_path
-              path: report_path
-            - key: log_path
-              path: log_path
----
-apiVersion: autoscaling.k8s.io/v1
-kind: VerticalPodAutoscaler
-metadata:
-  name: {{ .Release.Name }}-{{ .Chart.Name }}-vpa
-spec:
-  targetRef:
-    apiVersion: "apps/v1"
-    kind: Deployment
-    name: {{ .Release.Name }}-{{ .Chart.Name }}
-  updatePolicy:
-{{ toYaml .Values.vpa.updatePolicy | indent 4 }} 
-  resourcePolicy:
-{{ toYaml .Values.vpa.resourcePolicy | indent 4 }} 
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
