@@ -11,9 +11,4 @@ metadata:
     app.kubernetes.io/part-of: {{ .Release.Name }}
     app.kubernetes.io/managed-by: "{{ .Release.Service }}"
 data:
-  postgres_uri: {{ .Values.env.postgresUri }}
-  report_path: {{ .Values.env.reportPath }}
-  log_path: {{ .Values.env.logPath }}
-  vault_host: {{ .Values.vault.host | quote }}
-  vault_port: {{ .Values.vault.port | quote }}
-  vault_scheme: {{ .Values.vault.scheme | quote }}
+  port: {{ .Values.env.port | quote }}

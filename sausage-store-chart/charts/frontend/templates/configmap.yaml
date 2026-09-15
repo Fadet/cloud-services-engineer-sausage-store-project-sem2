@@ -3,12 +3,20 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
+    app.kubernetes.io/component: {{ .Chart.Name }}
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: "{{ .Release.Service }}"
 data:
+  # Конфиг для образа nginx-unprivileged: без директивы user, порт {{ .Values.containerPort }},
+  # pid и временные каталоги в /tmp (root FS контейнера — read-only), логи в stdout/stderr.
   {{ .Values.nginxConf }}: |
-    user  nginx;
     worker_processes  auto;
-    error_log  /var/log/nginx/error.log notice;
-    pid        /var/run/nginx.pid;
+    error_log  /dev/stderr notice;
+    pid        /tmp/nginx.pid;
     events {
         worker_connections  1024;
     }
@@ -17,17 +25,29 @@ data:
         include       /etc/nginx/mime.types;
         default_type  application/octet-stream;
 
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path       /tmp/proxy_temp_path;
+        fastcgi_temp_path     /tmp/fastcgi_temp;
+        uwsgi_temp_path       /tmp/uwsgi_temp;
+        scgi_temp_path        /tmp/scgi_temp;
+
         log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
                           '$status $body_bytes_sent "$http_referer" '
                           '"$http_user_agent" "$http_x_forwarded_for"';
 
-        access_log  /var/log/nginx/access.log  main;
+        access_log  /dev/stdout  main;
 
         sendfile        on;
         keepalive_timeout  65;
+        server_tokens   off;
+
         server {
 
-          listen       80;
+          listen       {{ .Values.containerPort }};
+
+          add_header X-Content-Type-Options nosniff always;
+          add_header X-Frame-Options SAMEORIGIN always;
+          add_header Referrer-Policy strict-origin-when-cross-origin always;
 
           location / {
               root   /usr/share/nginx/html;
@@ -35,8 +55,12 @@ data:
               try_files $uri $uri/ /index.html;
           }
 
-            location /api {
-              proxy_pass http://{{ .Release.Name }}-backend-service:8080;
+          location /api {
+              proxy_pass http://{{ .Release.Name }}-backend-service:{{ .Values.backendPort }};
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
           }
 
           error_page   500 502 503 504  /50x.html;
