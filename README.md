@@ -113,12 +113,3 @@ curl -s https://front-stepanovsn.2sem.students-projects.ru/api/products | head -
 случайными паролями. Описание ресурсов, переменных, запуск и эксплуатация — в [terraform/README.md](terraform/README.md).
 После `terraform apply`: `VAULT_HOST` (GitHub variable) = `terraform output -raw vault_public_ip`,
 `VAULT_TOKEN` (GitHub secret) = `ssh ubuntu@<ip> 'sudo cat /opt/vault/sausage-store.token'`.
-
-## Результат
-
-<!-- После зелёного прогона пайплайна добавьте сюда скриншоты (например, в readme-content/):
-     - https://front-stepanovsn.2sem.students-projects.ru — витрина с продуктами;
-     - оформленный заказ;
-     - вывод `kubectl -n <ns> get pods,pvc,svc,ingress,hpa,vpa`;
-     - `helm list -n <ns>` со STATUS deployed;
-     - `kubectl describe vpa sausage-store-backend-vpa` с RecommendationProvided. -->
