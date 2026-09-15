@@ -74,6 +74,11 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
                   key: vault_scheme
+            - name: VAULT_KV_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-{{ .Chart.Name }}-conf
+                  key: vault_kv_version
             - name: VAULT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -86,6 +91,8 @@ spec:
               containerPort: {{ .Values.containerPort }}
           livenessProbe:
 {{ toYaml .Values.livenessProbe | indent 12 }}
+          readinessProbe:
+{{ toYaml .Values.readinessProbe | indent 12 }}
           volumeMounts:
             - name: logs
               mountPath: /logs

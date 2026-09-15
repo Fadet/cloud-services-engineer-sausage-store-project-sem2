@@ -17,3 +17,4 @@ data:
   vault_host: {{ .Values.vault.host | quote }}
   vault_port: {{ .Values.vault.port | quote }}
   vault_scheme: {{ .Values.vault.scheme | quote }}
+  vault_kv_version: {{ .Values.vault.kvVersion | quote }}

@@ -34,3 +34,75 @@ sudo http-server ./dist/frontend/ -p 80 --proxy http://localhost:8080
 ```
 
 Then open your browser and go to [http://localhost](http://localhost)
+
+## Deployment (Kubernetes, GitHub Actions)
+
+Пайплайн `.github/workflows/deploy.yaml` запускается на push в `main`:
+сборка и публикация образов в Docker Hub → `helm lint`/`package` и загрузка чарта в Nexus →
+`helm upgrade --install` чарта из Nexus в кластер.
+
+### Что нужно настроить в GitHub
+
+Secrets:
+
+| Secret | Назначение |
+|---|---|
+| `DOCKER_USER`, `DOCKER_PASSWORD` | Docker Hub; образы публикуются как `<DOCKER_USER>/sausage-{backend,frontend,backend-report}` |
+| `NEXUS_HELM_REPO` | полный URL hosted helm-репозитория Nexus (Deployment policy: *Allow redeploy*) |
+| `NEXUS_HELM_REPO_USER`, `NEXUS_HELM_REPO_PASSWORD` | учётные данные Nexus |
+| `KUBE_CONFIG` | kubeconfig кластера (raw YAML или base64) |
+| `VAULT_TOKEN` | токен Vault с доступом к `kv/sausage-store` |
+
+Variables:
+
+| Variable | Назначение |
+|---|---|
+| `SAUSAGE_STORE_NAMESPACE` | namespace в кластере |
+| `VAULT_HOST` | адрес Vault (доступен и из кластера, и с раннеров GitHub) |
+| `VAULT_PORT`, `VAULT_SCHEME`, `VAULT_KV_PATH` | необязательно; по умолчанию `8200`, `http`, `kv/sausage-store` |
+
+### Секреты в Vault
+
+Единственный источник паролей БД — Vault. Бэкенд читает их в рантайме через Spring Cloud Vault,
+CI — при деплое, чтобы передать в чарт значения для PostgreSQL, MongoDB и backend-report.
+В `values.yaml` и в git паролей нет (шаблоны требуют их через `required`).
+
+```bash
+vault kv put kv/sausage-store \
+  spring.datasource.username=store \
+  spring.datasource.password='<pg-password>' \
+  spring.data.mongodb.uri='mongodb://reports:<mongo-app-password>@mongodb:27017/sausage-store' \
+  mongodb.root.password='<mongo-root-password>'
+```
+
+Spring Cloud Vault по умолчанию рассчитывает на KV v2; если движок `kv` смонтирован как v1,
+задайте `backend.vault.kvVersion: "1"` в `values.yaml` (или `--set`).
+
+Нюанс: PostgreSQL применяет пароль только при первой инициализации тома. Если сменить его в Vault
+после первого деплоя, нужно либо изменить пароль в самой БД (`ALTER USER store PASSWORD '...'`),
+либо пересоздать PVC `postgresql-data-postgresql-0`.
+
+### Локальная проверка чарта
+
+```bash
+CHART="$PWD/sausage-store-chart"
+docker run --rm -v "$CHART:/apps:ro" alpine/helm:3.14.0 lint /apps
+docker run --rm -v "$CHART:/apps:ro" alpine/helm:3.14.0 template sausage-store /apps \
+  --set backend.vault.token=x \
+  --set infra.postgresql.env.POSTGRES_PASSWORD=x \
+  --set infra.mongodb.env.MONGO_INITDB_ROOT_PASSWORD=x \
+  --set infra.mongodb.app.password=x \
+  --set backend-report.secret.db=x
+```
+
+### Проверка после деплоя
+
+```bash
+NS=<namespace>
+helm list -n "$NS"
+kubectl -n "$NS" get pods,svc,ingress,pvc,hpa,vpa
+kubectl -n "$NS" describe vpa sausage-store-backend-vpa      # ожидается RecommendationProvided
+kubectl -n "$NS" describe hpa sausage-store-backend-report-hpa  # Min 1 / Max 5 / cpu 75%
+kubectl -n "$NS" logs deploy/sausage-store-backend | grep -i flyway   # Successfully applied 4 migrations
+curl -s https://front-stepanovsn.2sem.students-projects.ru/api/products | head -c 300
+```

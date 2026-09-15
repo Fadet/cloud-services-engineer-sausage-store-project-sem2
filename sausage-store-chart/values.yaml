@@ -52,6 +52,7 @@ backend:
     host: YOUR_VAULT_HOST
     port: "8200"
     scheme: http
+    kvVersion: "2"
     token: ""
   service:
     port: 8080
@@ -63,7 +64,6 @@ backend:
       maxSurge: 1
       maxUnavailable: 0
   image: YOUR_DOCKERHUB/sausage-backend:latest
-  imagePullPolicy: Always
   resources:
     requests:
       memory: "256Mi"
@@ -92,6 +92,14 @@ backend:
     periodSeconds: 15
     timeoutSeconds: 5
     failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /actuator/health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
   vpa:
     updatePolicy:
       updateMode: "Off"
@@ -126,8 +134,6 @@ backend-report:
       drop: ["ALL"]
   env:
     port: "8080"
-  # URI MongoDB с учётными данными пользователя reports. В git не хранится:
-  # CI читает spring.data.mongodb.uri из Vault и передаёт --set backend-report.secret.db=...
   secret:
     db: ""
   resources:
