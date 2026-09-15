@@ -1,9 +1,36 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: mongodb
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: "{{ .Release.Service }}"
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: {{ .Values.mongodb.env.MONGO_INITDB_ROOT_USERNAME | quote }}
+  MONGO_INITDB_ROOT_PASSWORD: {{ required "infra.mongodb.env.MONGO_INITDB_ROOT_PASSWORD is required: pass it with --set (CI reads it from Vault)" .Values.mongodb.env.MONGO_INITDB_ROOT_PASSWORD | quote }}
+  MONGO_APP_DATABASE: {{ .Values.mongodb.app.database | quote }}
+  MONGO_APP_USERNAME: {{ .Values.mongodb.app.username | quote }}
+  MONGO_APP_PASSWORD: {{ required "infra.mongodb.app.password is required: pass it with --set (CI reads it from Vault)" .Values.mongodb.app.password | quote }}
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: mongodb
-  annotations:
-    helm.sh/hook-weight: "-5"
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: mongodb
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: "{{ .Release.Service }}"
 spec:
   serviceName: mongodb
   replicas: 1
@@ -14,21 +41,34 @@ spec:
     metadata:
       labels:
         app: mongodb
+        app.kubernetes.io/name: mongodb
+        app.kubernetes.io/instance: "{{ .Release.Name }}"
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: {{ .Release.Name }}
     spec:
       containers:
       - name: mongodb
-        image: mongo:7.0
-        envFrom:
-          - configMapRef:
-              name: mongodb-conf
+        image: {{ .Values.mongodb.image }}
+        env:
+          - name: MONGO_INITDB_ROOT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: mongodb-secret
+                key: MONGO_INITDB_ROOT_USERNAME
+          - name: MONGO_INITDB_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mongodb-secret
+                key: MONGO_INITDB_ROOT_PASSWORD
         ports:
         - containerPort: {{ .Values.mongodb.containerPort }}
         resources:
-          requests:
-            memory: "128Mi"
-            cpu: "50m"
-          limits:
-            memory: "256Mi"
+{{ toYaml .Values.mongodb.resources | indent 10 }}
+        readinessProbe:
+          exec:
+            command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
         volumeMounts:
         - name: mongodb-data
           mountPath: /data/db
@@ -39,14 +79,20 @@ spec:
       accessModes: [ "ReadWriteOnce" ]
       resources:
         requests:
-          storage: 1Gi
+          storage: {{ .Values.mongodb.storage }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: mongodb
+  namespace: {{ .Release.Namespace }}
   labels:
     app: mongodb
+    app.kubernetes.io/name: mongodb
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: "{{ .Release.Service }}"
 spec:
   ports:
   - port: {{ .Values.mongodb.containerPort }}
@@ -55,10 +101,68 @@ spec:
     app: mongodb
   clusterIP: None
 ---
-apiVersion: v1
-kind: ConfigMap
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: mongodb-conf
-data:
-  MONGO_INITDB_ROOT_USERNAME: {{ .Values.mongodb.env.MONGO_INITDB_ROOT_USERNAME }}
-  MONGO_INITDB_ROOT_PASSWORD: {{ .Values.mongodb.env.MONGO_INITDB_ROOT_PASSWORD }}
+  name: mongodb-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: mongodb-init
+    app.kubernetes.io/name: mongodb-init
+    app.kubernetes.io/instance: "{{ .Release.Name }}"
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: "{{ .Release.Service }}"
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: mongodb-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mongodb-init
+          image: {{ .Values.mongodb.image }}
+          envFrom:
+            - secretRef:
+                name: mongodb-secret
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              HOST="mongodb.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mongodb.containerPort }}"
+              echo "Waiting for MongoDB at $HOST ..."
+              for i in $(seq 1 30); do
+                if mongosh --quiet --host "$HOST" \
+                     -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+                     --authenticationDatabase admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 5
+              done
+              mongosh --quiet --host "$HOST" \
+                -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+                --authenticationDatabase admin "$MONGO_APP_DATABASE" --eval '
+                  const u = process.env.MONGO_APP_USERNAME;
+                  const p = process.env.MONGO_APP_PASSWORD;
+                  if (db.getUser(u) === null) {
+                    db.createUser({ user: u, pwd: p, roles: [{ role: "readWrite", db: db.getName() }] });
+                    print("user " + u + " created in " + db.getName());
+                  } else {
+                    db.updateUser(u, { pwd: p, roles: [{ role: "readWrite", db: db.getName() }] });
+                    print("user " + u + " already exists in " + db.getName() + ", updated");
+                  }'
