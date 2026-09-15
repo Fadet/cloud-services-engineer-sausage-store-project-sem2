@@ -1,4 +1,4 @@
-FROM maven:3.8.2-openjdk-16-slim AS builder
+FROM maven:3.9-eclipse-temurin-17 AS builder
 ARG VERSION=${VERSION}
 WORKDIR /usr/src/app
 COPY ./src ./src
@@ -6,7 +6,7 @@ COPY *.xml ./
 
 RUN mvn -B package -Dversion.application=${VERSION}
 
-FROM eclipse-temurin:16-jdk-alpine
+FROM bellsoft/liberica-openjre-alpine:17
 ARG VERSION=${VERSION}
 WORKDIR /app
 

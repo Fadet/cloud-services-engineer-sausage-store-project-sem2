@@ -23,6 +23,8 @@ spec:
   template:
     metadata:
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         prometheus.io/path: {{ .Values.annotations.path }}
         prometheus.io/port: "{{ .Values.annotations.port }}"
         prometheus.io/scrape: "{{ .Values.annotations.scrape }}"
@@ -37,6 +39,17 @@ spec:
       # изменяемые каталоги (/logs для log4j2, /tmp для JVM) вынесены в emptyDir
       securityContext:
 {{ toYaml .Values.podSecurityContext | indent 8 }}
+      # Ждём PostgreSQL: без этого первый старт падает на Flyway (UnknownHostException)
+      # и под уходит в лишние рестарты
+      initContainers:
+        - name: wait-for-postgresql
+          image: {{ .Values.global.waitImage }}
+          command: ["sh", "-c", "until nc -z postgresql 5432; do echo waiting for postgresql; sleep 3; done"]
+          securityContext:
+{{ toYaml .Values.containerSecurityContext | indent 12 }}
+          resources:
+            requests: { cpu: "10m", memory: "8Mi" }
+            limits: { cpu: "50m", memory: "16Mi" }
       containers:
         - name: {{ .Chart.Name }}
           image: {{ .Values.image }}

@@ -23,6 +23,9 @@ spec:
       app: {{ .Release.Name }}-{{ .Chart.Name }}
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
         app: {{ .Release.Name }}-{{ .Chart.Name }}
         app.kubernetes.io/name: {{ .Chart.Name }}
@@ -34,6 +37,16 @@ spec:
       # поэтому root FS полностью read-only
       securityContext:
 {{ toYaml .Values.podSecurityContext | indent 8 }}
+      # Ждём MongoDB (пользователя создаёт Job mongodb-init из чарта infra)
+      initContainers:
+        - name: wait-for-mongodb
+          image: {{ .Values.global.waitImage }}
+          command: ["sh", "-c", "until nc -z mongodb 27017; do echo waiting for mongodb; sleep 3; done"]
+          securityContext:
+{{ toYaml .Values.containerSecurityContext | indent 12 }}
+          resources:
+            requests: { cpu: "10m", memory: "8Mi" }
+            limits: { cpu: "50m", memory: "16Mi" }
       containers:
         - name: {{ .Chart.Name }}
           image: {{ .Values.image }}

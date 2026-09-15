@@ -37,7 +37,7 @@ Then open your browser and go to [http://localhost](http://localhost)
 
 ## Deployment (Kubernetes, GitHub Actions)
 
-Пайплайн `.github/workflows/deploy.yaml` запускается на push в `main`:
+Пайплайн `.github/workflows/deploy.yaml` запускается на push в `main` (или вручную через *Run workflow*):
 сборка и публикация образов в Docker Hub → `helm lint`/`package` и загрузка чарта в Nexus →
 `helm upgrade --install` чарта из Nexus в кластер.
 

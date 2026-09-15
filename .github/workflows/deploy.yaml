@@ -1,6 +1,7 @@
 name: Sausage Store Deploy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -15,7 +16,8 @@ env:
   # Имя релиза и чарта; чарт берётся из Nexus, а не из локального каталога
   HELM_RELEASE: sausage-store
   HELM_CHART: sausage-store
-  HELM_CHART_VERSION: 0.1.0
+  # Версия чарта уникальна для каждого прогона: в helm history видно, какой прогон задеплоен
+  HELM_CHART_VERSION: 0.1.${{ github.run_number }}
 
 jobs:
   # Сборка и пуш образов в докерхаб:
@@ -88,10 +90,11 @@ jobs:
         - name: Lint Helm chart
           run: helm lint ./sausage-store-chart
         - name: Package Helm chart
-          # Версия чарта фиксирована в Chart.yaml; в Nexus включена политика
-          # "Allow redeploy", поэтому повторная загрузка той же версии перезаписывает её.
+          # Версия чарта = 0.1.<run_number>, appVersion = sha коммита.
+          # В Nexus включена политика "Allow redeploy" на случай повторного прогона.
           run: |
-            helm package ./sausage-store-chart --destination ./packaged
+            helm package ./sausage-store-chart --destination ./packaged \
+              --version "${HELM_CHART_VERSION}" --app-version "${{ github.sha }}"
             ls -l ./packaged
         - name: Upload Helm chart to Nexus
           # Hosted helm-репозиторий Nexus принимает .tgz обычным HTTP PUT/POST.
@@ -207,6 +210,7 @@ jobs:
               --set backend.vault.scheme="${{ vars.VAULT_SCHEME || 'http' }}" \
               --set backend.vault.token="${VAULT_TOKEN}" \
               -f "${RUNNER_TEMP}/db-secrets.json" \
+              --history-max 3 \
               --wait --timeout 10m
             rm -f "${RUNNER_TEMP}/db-secrets.json"
         - name: Show release status

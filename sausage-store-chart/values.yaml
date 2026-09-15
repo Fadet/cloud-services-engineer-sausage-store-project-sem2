@@ -1,5 +1,7 @@
 global:
   imagePullPolicy: Always
+  # образ для initContainer-ожиданий зависимостей (nc -z host port)
+  waitImage: busybox:1.36
 
 
 frontend:

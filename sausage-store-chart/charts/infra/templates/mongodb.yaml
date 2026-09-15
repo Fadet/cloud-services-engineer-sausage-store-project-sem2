@@ -102,10 +102,14 @@ spec:
     app: mongodb
   clusterIP: None
 ---
+# Обычный ресурс, а не helm-hook: post-install hook выполняется только после успешного
+# --wait, а --wait не проходит, пока backend-report не залогинится этим пользователем
+# (взаимная блокировка на первом деплое). Имя с номером ревизии — новый Job на каждый
+# upgrade, старые удаляются по ttlSecondsAfterFinished.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: mongodb-init
+  name: mongodb-init-r{{ .Release.Revision }}
   namespace: {{ .Release.Namespace }}
   labels:
     app: mongodb-init
@@ -114,12 +118,8 @@ metadata:
     app.kubernetes.io/component: database
     app.kubernetes.io/part-of: {{ .Release.Name }}
     app.kubernetes.io/managed-by: "{{ .Release.Service }}"
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "5"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
-  backoffLimit: 3
+  backoffLimit: 6
   ttlSecondsAfterFinished: 300
   template:
     metadata:
@@ -147,7 +147,7 @@ spec:
               set -e
               HOST="mongodb.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mongodb.containerPort }}"
               echo "Waiting for MongoDB at $HOST ..."
-              for i in $(seq 1 30); do
+              for i in $(seq 1 60); do
                 if mongosh --quiet --host "$HOST" \
                      -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
                      --authenticationDatabase admin --eval "db.adminCommand('ping').ok" >/dev/null 2>&1; then
