@@ -9,9 +9,13 @@ env:
   NEXUS_HELM_REPO: ${{ secrets.NEXUS_HELM_REPO }}
   NEXUS_HELM_REPO_USER: ${{ secrets.NEXUS_HELM_REPO_USER }}
   NEXUS_HELM_REPO_PASSWORD: ${{ secrets.NEXUS_HELM_REPO_PASSWORD }}
-  SAUSAGE_STORE_NAMESPACE: YOUR_NAMESPACE
+  SAUSAGE_STORE_NAMESPACE: ${{ vars.SAUSAGE_STORE_NAMESPACE }} #r-devops-magistracy-project-2sem-933104646
   KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
   VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+  # Имя релиза и чарта; чарт берётся из Nexus, а не из локального каталога
+  HELM_RELEASE: sausage-store
+  HELM_CHART: sausage-store
+  HELM_CHART_VERSION: 0.1.0
 
 jobs:
   # Сборка и пуш образов в докерхаб:
@@ -25,7 +29,7 @@ jobs:
         - name: Set up Docker Buildx
           # Установка сборщика контейнеров Docker:
           uses: docker/setup-buildx-action@v2
-        - name: Login to Docker 
+        - name: Login to Docker
           # Авторизация на Docker Hub:
           uses: docker/login-action@v2
           # При помощи with передаём в action параметры username и password:
@@ -38,17 +42,18 @@ jobs:
           # Одновременный билд и пуш образа в Docker Hub:
           uses: docker/build-push-action@v4
           with:
-            # Параметр context: ./backend/ указывает, что нужный Dockerfile 
+            # Параметр context: ./backend/ указывает, что нужный Dockerfile
             # находится в ./backend/
             context: ./backend/
             # Параметр push: true указывает, что образ нужно не только собрать,
             # но и отправить на Docker Hub:
             push: true
-            # В параметре tags задаётся название и тег для образа.
-            # Для каждого пересобранного образа 
-            # устанавливаем тег latest, чтобы потом
-            # на сервере и в docker-compose.yml не указывать версию образа:
-            tags: YOUR_DOCKERHUB/sausage-backend:latest
+            # Каждый образ получает два тега: latest и sha коммита.
+            # Тег с sha используется при деплое, чтобы Kubernetes
+            # гарантированно перекатил поды на новую версию.
+            tags: |
+              ${{ secrets.DOCKER_USER }}/sausage-backend:latest
+              ${{ secrets.DOCKER_USER }}/sausage-backend:${{ github.sha }}
             build-args: |
               VERSION=${{ github.sha }}
         - name: Push Frontend to DockerHub
@@ -56,13 +61,17 @@ jobs:
           with:
             context: ./frontend/
             push: true
-            tags: YOUR_DOCKERHUB/sausage-frontend:latest
+            tags: |
+              ${{ secrets.DOCKER_USER }}/sausage-frontend:latest
+              ${{ secrets.DOCKER_USER }}/sausage-frontend:${{ github.sha }}
         - name: Push Backend-report to DockerHub
           uses: docker/build-push-action@v4
           with:
             context: ./backend-report/
             push: true
-            tags: YOUR_DOCKERHUB/sausage-backend-report:latest
+            tags: |
+              ${{ secrets.DOCKER_USER }}/sausage-backend-report:latest
+              ${{ secrets.DOCKER_USER }}/sausage-backend-report:${{ github.sha }}
   # Упаковываем helm-чарт и пушим его в Nexus
   add_helm_chart_to_nexus:
       name: Add Helm Chart To Nexus
@@ -70,7 +79,29 @@ jobs:
       needs: build_and_push_to_docker_hub
 
       steps:
-      #### Опишите необходимые шаги
+        - name: Check out the repo
+          uses: actions/checkout@v3
+        - name: Set up Helm
+          uses: azure/setup-helm@v3
+          with:
+            version: v3.14.0
+        - name: Lint Helm chart
+          run: helm lint ./sausage-store-chart
+        - name: Package Helm chart
+          # Версия чарта фиксирована в Chart.yaml; в Nexus включена политика
+          # "Allow redeploy", поэтому повторная загрузка той же версии перезаписывает её.
+          run: |
+            helm package ./sausage-store-chart --destination ./packaged
+            ls -l ./packaged
+        - name: Upload Helm chart to Nexus
+          # Hosted helm-репозиторий Nexus принимает .tgz обычным HTTP PUT/POST.
+          # Учётные данные берутся из Secrets, в YAML их нет.
+          run: |
+            CHART_TGZ="$(ls ./packaged/${HELM_CHART}-*.tgz)"
+            curl --fail --silent --show-error \
+              -u "${NEXUS_HELM_REPO_USER}:${NEXUS_HELM_REPO_PASSWORD}" \
+              --upload-file "${CHART_TGZ}" \
+              "${NEXUS_HELM_REPO%/}/"
 
   # Деплоим приложения в кластер Kubernetes с помощью helm-чарт
   deploy_helm_chart_to_kubernetes:
@@ -79,4 +110,97 @@ jobs:
       needs: add_helm_chart_to_nexus
 
       steps:
-      #### Опишите необходимые шаги
+        - name: Set up Helm
+          uses: azure/setup-helm@v3
+          with:
+            version: v3.14.0
+        - name: Configure kubeconfig
+          # kubeconfig приходит из секрета KUBE_CONFIG и в репозиторий не попадает.
+          # Секрет может быть как «сырым» YAML, так и base64 — поддерживаем оба варианта.
+          run: |
+            mkdir -p ~/.kube
+            if printf '%s' "${KUBE_CONFIG}" | grep -q 'apiVersion'; then
+              printf '%s' "${KUBE_CONFIG}" > ~/.kube/config
+            else
+              printf '%s' "${KUBE_CONFIG}" | base64 -d > ~/.kube/config
+            fi
+            chmod 600 ~/.kube/config
+            kubectl config current-context
+        - name: Add Nexus Helm repository
+          run: |
+            helm repo add nexus "${NEXUS_HELM_REPO}" \
+              --username "${NEXUS_HELM_REPO_USER}" \
+              --password "${NEXUS_HELM_REPO_PASSWORD}"
+            helm repo update
+        - name: Read database secrets from Vault
+          # Единый источник истины для паролей БД — Vault (kv/sausage-store).
+          # Бэкенд читает их в рантайме через Spring Cloud Vault, а CI — здесь, чтобы
+          # передать в чарт значения для инициализации PostgreSQL/MongoDB и backend-report.
+          # В git и в values.yaml паролей нет. Поддерживаются KV v2 и v1.
+          env:
+            VAULT_ADDR: "${{ vars.VAULT_SCHEME || 'http' }}://${{ vars.VAULT_HOST }}:${{ vars.VAULT_PORT || '8200' }}"
+            VAULT_KV_PATH: "${{ vars.VAULT_KV_PATH || 'kv/sausage-store' }}"
+          run: |
+            set -euo pipefail
+            mount="${VAULT_KV_PATH%%/*}"
+            path="${VAULT_KV_PATH#*/}"
+            # KV v2 -> /v1/<mount>/data/<path>, данные в .data.data; KV v1 -> /v1/<mount>/<path>, данные в .data
+            if resp="$(curl -sSf -H "X-Vault-Token: ${VAULT_TOKEN}" "${VAULT_ADDR}/v1/${mount}/data/${path}")"; then
+              data="$(printf '%s' "${resp}" | jq -c '.data.data')"
+            else
+              resp="$(curl -sSf -H "X-Vault-Token: ${VAULT_TOKEN}" "${VAULT_ADDR}/v1/${mount}/${path}")"
+              data="$(printf '%s' "${resp}" | jq -c '.data')"
+            fi
+            get() { printf '%s' "${data}" | jq -er --arg k "$1" '.[$k] // empty'; }
+
+            POSTGRES_PASSWORD="$(get spring.datasource.password)"
+            MONGODB_URI="$(get spring.data.mongodb.uri)"
+            MONGO_ROOT_PASSWORD="$(get mongodb.root.password)"
+            # Пользователь/пароль прикладного пользователя Mongo берутся из того же URI,
+            # который использует бэкенд: mongodb://<user>:<password>@host:port/db
+            MONGO_APP_USERNAME="$(printf '%s' "${MONGODB_URI}" | sed -E 's#^mongodb(\+srv)?://([^:/@]+):([^@]+)@.*#\2#')"
+            MONGO_APP_PASSWORD="$(printf '%s' "${MONGODB_URI}" | sed -E 's#^mongodb(\+srv)?://([^:/@]+):([^@]+)@.*#\3#')"
+
+            for v in POSTGRES_PASSWORD MONGODB_URI MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD; do
+              [ -n "${!v}" ] || { echo "::error::${v} could not be resolved from Vault (${VAULT_KV_PATH})"; exit 1; }
+              echo "::add-mask::${!v}"
+            done
+            # Секретные значения передаём helm отдельным values-файлом (JSON), а не через --set:
+            # так любые спецсимволы в паролях (запятые, кавычки) не ломают разбор.
+            jq -n \
+              --arg pg "${POSTGRES_PASSWORD}" \
+              --arg mroot "${MONGO_ROOT_PASSWORD}" \
+              --arg muser "${MONGO_APP_USERNAME}" \
+              --arg mpass "${MONGO_APP_PASSWORD}" \
+              --arg muri "${MONGODB_URI}" \
+              '{
+                 infra: {
+                   postgresql: { env: { POSTGRES_PASSWORD: $pg } },
+                   mongodb: { env: { MONGO_INITDB_ROOT_PASSWORD: $mroot }, app: { username: $muser, password: $mpass } }
+                 },
+                 "backend-report": { secret: { db: $muri } }
+               }' > "${RUNNER_TEMP}/db-secrets.json"
+            chmod 600 "${RUNNER_TEMP}/db-secrets.json"
+            echo "Secrets resolved from Vault (${VAULT_KV_PATH})"
+        - name: Deploy Helm chart from Nexus
+          # Namespace создан заранее в учебном кластере; прав на его создание у SA нет.
+          # Образы фиксируются тегом с sha коммита, адрес Vault берётся из переменной
+          # репозитория VAULT_HOST, токен — из секрета VAULT_TOKEN, пароли БД — из Vault (шаг выше).
+          run: |
+            helm upgrade --install "${HELM_RELEASE}" "nexus/${HELM_CHART}" \
+              --version "${HELM_CHART_VERSION}" \
+              --namespace "${SAUSAGE_STORE_NAMESPACE}" \
+              --set backend.image="${{ secrets.DOCKER_USER }}/sausage-backend:${{ github.sha }}" \
+              --set frontend.image="${{ secrets.DOCKER_USER }}/sausage-frontend:${{ github.sha }}" \
+              --set backend-report.image="${{ secrets.DOCKER_USER }}/sausage-backend-report:${{ github.sha }}" \
+              --set backend.vault.host="${{ vars.VAULT_HOST }}" \
+              --set backend.vault.port="${{ vars.VAULT_PORT || '8200' }}" \
+              --set backend.vault.scheme="${{ vars.VAULT_SCHEME || 'http' }}" \
+              --set backend.vault.token="${VAULT_TOKEN}" \
+              -f "${RUNNER_TEMP}/db-secrets.json" \
+              --wait --timeout 10m
+            rm -f "${RUNNER_TEMP}/db-secrets.json"
+        - name: Show release status
+          run: |
+            helm list --namespace "${SAUSAGE_STORE_NAMESPACE}"
+            helm status "${HELM_RELEASE}" --namespace "${SAUSAGE_STORE_NAMESPACE}"
